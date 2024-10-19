@@ -1,4 +1,4 @@
-FROM ghcr.io/jinash-rouniyar/spotdog:master as build
+FROM ghcr.io/merklebot/hackathon-amd-image:master as build
 
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
