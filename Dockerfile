@@ -1,4 +1,4 @@
-FROM ghcr.io/Jinash-Rouniyar/SpotDog:master as build
+FROM ghcr.io/jinash-rouniyar/spotdog:master:master as build
 
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
