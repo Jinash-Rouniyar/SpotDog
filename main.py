@@ -100,6 +100,11 @@ def main():
     user_input = speech_to_text_manager.speechtotext_from_file(WAVE_OUTPUT_FILENAME, LANG_CODE)
     print(f"Transcribed user input: {user_input}")
 
+    output_text = math_chain.invoke({
+            "question": question,
+            "answer_exp": answer_exp,
+            "student_input": user_input
+        })
     endpoint_url = f'https://{region}.tts.speech.microsoft.com/cognitiveservices/v1'
     headers = {
         'Ocp-Apim-Subscription-Key': subscription_key,
@@ -110,7 +115,7 @@ def main():
     ssml = f"""
     <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>
         <voice name='en-US-AnaNeural'>
-            {user_input}
+            {output_text}
         </voice>
     </speak>
     """
