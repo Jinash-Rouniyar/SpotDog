@@ -14,6 +14,7 @@ SPOT_USERNAME = "admin"
 SPOT_PASSWORD = "2zqa8dgw7lor"
 WAVE_OUTPUT_FILENAME = "aaaa.wav"
 LANG_CODE = "en-US"
+import logging
 
 # Initialize Azure Speech SDK
 speech_config = speechsdk.SpeechConfig(subscription=os.environ.get('SPEECH_KEY'), region=os.environ.get('SPEECH_REGION'))
@@ -28,7 +29,98 @@ def capture_image():
     rv, image = camera_capture.read()
     print(f"Image Dimensions: {image.shape}")
     camera_capture.release()
+def main():
+    try:
+        # Play default voice
+        default_voice = "default.wav"
+        logging.info(f"Playing default voice: {default_voice}")
+        os.system(f"ffplay -nodisp -autoexit -loglevel quiet {default_voice}")
 
+        # Record audio
+        cmd = f'arecord -vv --format=cd --device={os.environ["AUDIO_INPUT_DEVICE"]} -r 48000 --duration=10 -c 1 {WAVE_OUTPUT_FILENAME}'
+        logging.info(f"Recording audio with command: {cmd}")
+        os.system(cmd)
+
+        # Transcribe the recorded audio
+        try:
+            user_input = speech_to_text_manager.speechtotext_from_file(WAVE_OUTPUT_FILENAME, LANG_CODE)
+            logging.info(f"Transcribed user input: {user_input}")
+        except Exception as e:
+            logging.error(f"Error in speech-to-text conversion: {str(e)}")
+            raise
+
+        # Process input (math chain)
+        try:
+            output_text = math_chain.invoke({
+                "question": question,
+                "answer_exp": answer_exp,
+                "student_input": user_input
+            })
+        except Exception as e:
+            logging.error(f"Error in math processing: {str(e)}")
+            raise
+
+        # Text-to-speech using Azure
+        endpoint_url = f'https://{region}.tts.speech.microsoft.com/cognitiveservices/v1'
+        headers = {
+            'Ocp-Apim-Subscription-Key': subscription_key,
+            'Content-Type': 'application/ssml+xml',
+            'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3'
+        }
+
+        ssml = f"""
+        <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>
+            <voice name='en-US-AnaNeural'>
+                {output_text}
+            </voice>
+        </speak>
+        """
+
+        try:
+            response = requests.post(endpoint_url, headers=headers, data=ssml)
+            response.raise_for_status()  # Raises an HTTPError for bad responses
+            
+            tts_filename = "abcd.mp3"
+            with open(tts_filename, 'wb') as f:
+                f.write(response.content)
+            logging.info(f"TTS audio saved to {tts_filename}")
+            
+            os.system(f"ffplay -nodisp -autoexit -loglevel quiet {tts_filename}")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error in TTS API call: {str(e)}")
+            raise
+
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {str(e)}")
+    # response = stream_and_synthesize_response(user_input)
+
+    # Use wrapper in context manager to lease control
+    with SpotController(username=SPOT_USERNAME, password=SPOT_PASSWORD, robot_ip=ROBOT_IP) as spot:
+        time.sleep(2)
+        capture_image()
+        
+        # Move head to specified positions
+        spot.move_head_in_points(yaws=[0.2, 0],
+                               pitches=[0.3, 0],
+                               rolls=[0.4, 0],
+                               sleep_after_point_reached=1)
+        capture_image()
+        time.sleep(3)
+
+        # Move Spot forward
+        spot.move_to_goal(goal_x=0.5, goal_y=0)
+        time.sleep(3)
+        capture_image()
+
+        # Control Spot by velocity
+        spot.move_by_velocity_control(v_x=-0.3, v_y=0, v_rot=0, cmd_duration=2)
+        capture_image()
+        time.sleep(3)
+
+if __name__ == '__main__':
+    main()
+    
+'''
 def stream_and_synthesize_response(user_input):
     def stream_output():
         buffer = ""
@@ -89,76 +181,7 @@ def stream_and_synthesize_response(user_input):
 
     return full_response
 
-def main():
-    default_voice = "default.wav"
-    os.system(f"ffplay -nodisp -autoexit -loglevel quiet {default_voice}")
-    cmd = f'arecord -vv --format=cd --device={os.environ["AUDIO_INPUT_DEVICE"]} -r 48000 --duration=10 -c 1 {WAVE_OUTPUT_FILENAME}'
-    print(cmd)
-    os.system(cmd)
 
-    # Transcribe the recorded audio
-    user_input = speech_to_text_manager.speechtotext_from_file(WAVE_OUTPUT_FILENAME, LANG_CODE)
-    print(f"Transcribed user input: {user_input}")
-
-    output_text = math_chain.invoke({
-            "question": question,
-            "answer_exp": answer_exp,
-            "student_input": user_input
-        })
-    endpoint_url = f'https://{region}.tts.speech.microsoft.com/cognitiveservices/v1'
-    headers = {
-        'Ocp-Apim-Subscription-Key': subscription_key,
-        'Content-Type': 'application/ssml+xml',
-        'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3'
-    }
-
-    ssml = f"""
-    <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>
-        <voice name='en-US-AnaNeural'>
-            {output_text}
-        </voice>
-    </speak>
-    """
-    response = requests.post(endpoint_url, headers=headers, data=ssml)
-
-    if response.status_code == 200:
-        # Generate a unique filename for the Azure TTS output
-        tts_filename = f"abcd.mp3"
-        
-        # Save the audio file
-        with open(tts_filename, 'wb') as f:
-            f.write(response.content)
-        os.system(f"ffplay -nodisp -autoexit -loglevel quiet {tts_filename}")   
-    
-    # response = stream_and_synthesize_response(user_input)
-
-    # Use wrapper in context manager to lease control
-    with SpotController(username=SPOT_USERNAME, password=SPOT_PASSWORD, robot_ip=ROBOT_IP) as spot:
-        time.sleep(2)
-        capture_image()
-        
-        # Move head to specified positions
-        spot.move_head_in_points(yaws=[0.2, 0],
-                               pitches=[0.3, 0],
-                               rolls=[0.4, 0],
-                               sleep_after_point_reached=1)
-        capture_image()
-        time.sleep(3)
-
-        # Move Spot forward
-        spot.move_to_goal(goal_x=0.5, goal_y=0)
-        time.sleep(3)
-        capture_image()
-
-        # Control Spot by velocity
-        spot.move_by_velocity_control(v_x=-0.3, v_y=0, v_rot=0, cmd_duration=2)
-        capture_image()
-        time.sleep(3)
-
-if __name__ == '__main__':
-    main()
-    
-'''
 import os
 import time
 from spot_controller import SpotController
