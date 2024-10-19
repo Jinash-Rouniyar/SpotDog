@@ -1,5 +1,5 @@
 {
-    "image": "ghcr.io/Jinash-Rouniyar/SpotDog:main",
+    "image": "ghcr.io/jinash-rouniyar/spotdog:main",
     "container_name": "",
     "ports": [],
     "network_mode": "host",
