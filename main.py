@@ -1,17 +1,19 @@
 import os
 import time
 import base64
+import subprocess
+import tempfile
 from spot_controller import SpotController
 import cv2
 from math_bot import math_chain, question, answer_exp
 import azure.cognitiveservices.speech as speechsdk
 from azure_pronunciation import SpeechToTextManager
 
-ROBOT_IP = "192.168.80.3"#os.environ['ROBOT_IP']
-SPOT_USERNAME = "admin"#os.environ['SPOT_USERNAME']
-SPOT_PASSWORD = "2zqa8dgw7lor"#os.environ['SPOT_PASSWORD']
+ROBOT_IP = "192.168.80.3"
+SPOT_USERNAME = "admin"
+SPOT_PASSWORD = "2zqa8dgw7lor"
 WAVE_OUTPUT_FILENAME = "aaaa.wav"
-LANG_CODE = "en-US"  # Adjust this if needed
+LANG_CODE = "en-US"
 
 # Initialize Azure Speech SDK
 speech_config = speechsdk.SpeechConfig(subscription=os.environ.get('SPEECH_KEY'), region=os.environ.get('SPEECH_REGION'))
@@ -41,23 +43,48 @@ def stream_and_synthesize_response(user_input):
         if buffer:
             yield buffer
 
-    full_response = ""
-    for text_chunk in stream_output():
-        full_response += text_chunk
+    # Create a temporary file for the audio stream
+    with tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as temp_audio_file:
+        temp_filename = temp_audio_file.name
         
-        # Generate speech from the text chunk
-        result = speech_synthesizer.speak_text_async(text_chunk).get()
-        
-        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            # Convert audio data to base64
-            audio_base64 = base64.b64encode(result.audio_data).decode('utf-8')
+        # Start ffplay process for streaming
+        ffplay_process = subprocess.Popen(
+            ['ffplay', 
+             '-f', 's16le',  # Format: 16-bit little-endian
+             '-ar', '16000',  # Sample rate: 16kHz
+             '-ac', '1',      # Mono audio
+             '-i', 'pipe:0',  # Read from stdin
+             '-nodisp',       # No video display
+             '-autoexit'      # Exit when done
+            ],
+            stdin=subprocess.PIPE,
+            bufsize=0  # Unbuffered
+        )
+
+        full_response = ""
+        for text_chunk in stream_output():
+            full_response += text_chunk
             
-            # Here you would typically emit or send the audio data
-            # For this example, we'll just print it
-            print(f"Text chunk: {text_chunk}")
-            print(f"Audio data (base64): {audio_base64[:50]}...")  # Print first 50 chars
-        else:
-            print(f"Speech synthesis failed: {result.reason}")
+            # Generate speech from the text chunk
+            result = speech_synthesizer.speak_text_async(text_chunk).get()
+            
+            if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                # Write audio data directly to ffplay's stdin
+                try:
+                    ffplay_process.stdin.write(result.audio_data)
+                    ffplay_process.stdin.flush()
+                except BrokenPipeError:
+                    print("Audio stream was closed")
+                    break
+            else:
+                print(f"Speech synthesis failed: {result.reason}")
+
+        # Close the stdin pipe and wait for ffplay to finish
+        try:
+            ffplay_process.stdin.close()
+        except:
+            pass
+        ffplay_process.wait()
 
     return full_response
 
@@ -74,27 +101,26 @@ def main():
 
     # Stream and synthesize response
     response = stream_and_synthesize_response(user_input)
-    print(f"Full response: {response}")
 
-    # Use wrapper in context manager to lease control, turn on E-Stop, power on the robot and stand up at start
-    # and to return lease + sit down at the end
+    # Use wrapper in context manager to lease control
     with SpotController(username=SPOT_USERNAME, password=SPOT_PASSWORD, robot_ip=ROBOT_IP) as spot:
         time.sleep(2)
         capture_image()
-        # Move head to specified positions with intermediate time.sleep
+        
+        # Move head to specified positions
         spot.move_head_in_points(yaws=[0.2, 0],
-                                 pitches=[0.3, 0],
-                                 rolls=[0.4, 0],
-                                 sleep_after_point_reached=1)
+                               pitches=[0.3, 0],
+                               rolls=[0.4, 0],
+                               sleep_after_point_reached=1)
         capture_image()
         time.sleep(3)
 
-        # Make Spot to move by goal_x meters forward and goal_y meters left
+        # Move Spot forward
         spot.move_to_goal(goal_x=0.5, goal_y=0)
         time.sleep(3)
         capture_image()
 
-        # Control Spot by velocity in m/s (or in rad/s for rotation)
+        # Control Spot by velocity
         spot.move_by_velocity_control(v_x=-0.3, v_y=0, v_rot=0, cmd_duration=2)
         capture_image()
         time.sleep(3)
