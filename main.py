@@ -8,7 +8,7 @@ import cv2
 from math_bot import math_chain, question, answer_exp
 import azure.cognitiveservices.speech as speechsdk
 from azure_pronunciation import SpeechToTextManager
-
+import requests
 ROBOT_IP = "192.168.80.3"
 SPOT_USERNAME = "admin"
 SPOT_PASSWORD = "2zqa8dgw7lor"
@@ -18,7 +18,8 @@ LANG_CODE = "en-US"
 # Initialize Azure Speech SDK
 speech_config = speechsdk.SpeechConfig(subscription=os.environ.get('SPEECH_KEY'), region=os.environ.get('SPEECH_REGION'))
 speech_synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config)
-
+subscription_key = os.environ.get('SPEECH_KEY')
+region = os.environ.get('SPEECH_REGION')
 # Initialize SpeechToTextManager
 speech_to_text_manager = SpeechToTextManager()
 
@@ -89,18 +90,42 @@ def stream_and_synthesize_response(user_input):
     return full_response
 
 def main():
-    print("Start recording audio")
+    default_voice = "default.wav"
+    os.system(f"ffplay -nodisp -autoexit -loglevel quiet {default_voice}")
     cmd = f'arecord -vv --format=cd --device={os.environ["AUDIO_INPUT_DEVICE"]} -r 48000 --duration=10 -c 1 {WAVE_OUTPUT_FILENAME}'
     print(cmd)
     os.system(cmd)
-    print("Audio recording completed")
 
     # Transcribe the recorded audio
     user_input = speech_to_text_manager.speechtotext_from_file(WAVE_OUTPUT_FILENAME, LANG_CODE)
     print(f"Transcribed user input: {user_input}")
 
-    # Stream and synthesize response
-    response = stream_and_synthesize_response(user_input)
+    endpoint_url = f'https://{region}.tts.speech.microsoft.com/cognitiveservices/v1'
+    headers = {
+        'Ocp-Apim-Subscription-Key': subscription_key,
+        'Content-Type': 'application/ssml+xml',
+        'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3'
+    }
+
+    ssml = f"""
+    <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>
+        <voice name='en-US-AnaNeural'>
+            {user_input}
+        </voice>
+    </speak>
+    """
+    response = requests.post(endpoint_url, headers=headers, data=ssml)
+
+    if response.status_code == 200:
+        # Generate a unique filename for the Azure TTS output
+        tts_filename = f"abcd.mp3"
+        
+        # Save the audio file
+        with open(tts_filename, 'wb') as f:
+            f.write(response.content)
+        os.system(f"ffplay -nodisp -autoexit -loglevel quiet {tts_filename}")   
+    
+    # response = stream_and_synthesize_response(user_input)
 
     # Use wrapper in context manager to lease control
     with SpotController(username=SPOT_USERNAME, password=SPOT_PASSWORD, robot_ip=ROBOT_IP) as spot:
