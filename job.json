@@ -1,5 +1,5 @@
 {
-    "image": "ghcr.io/otaberu/hackathon-spot-image:main",
+    "image": "ghcr.io/merklebot/hackathon-amd-image:main",
     "container_name": "",
     "ports": [],
     "network_mode": "host",
