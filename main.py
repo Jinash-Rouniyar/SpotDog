@@ -32,7 +32,7 @@ def capture_image():
 def main():
     try:
         # Play default voice
-        default_voice = "default.wav"
+        default_voice = os.path.join(os.getcwd(), "default.wav")
         logging.info(f"Playing default voice: {default_voice}")
         os.system(f"ffplay -nodisp -autoexit -loglevel quiet {default_voice}")
 
