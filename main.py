@@ -1,271 +1,349 @@
-import os
-import time
-import base64
-import subprocess
-import tempfile
-from spot_controller import SpotController
 import cv2
-from math_bot import math_chain, question, answer_exp
-import azure.cognitiveservices.speech as speechsdk
-from azure_pronunciation import SpeechToTextManager
-import requests
-ROBOT_IP = "192.168.80.3"
-SPOT_USERNAME = "admin"
-SPOT_PASSWORD = "2zqa8dgw7lor"
-WAVE_OUTPUT_FILENAME = "aaaa.wav"
-LANG_CODE = "en-US"
-import logging
-
-# Initialize Azure Speech SDK
-speech_config = speechsdk.SpeechConfig(subscription=os.environ.get('SPEECH_KEY'), region=os.environ.get('SPEECH_REGION'))
-speech_synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config)
-subscription_key = os.environ.get('SPEECH_KEY')
-region = os.environ.get('SPEECH_REGION')
-# Initialize SpeechToTextManager
-speech_to_text_manager = SpeechToTextManager()
-
-def capture_image():
-    camera_capture = cv2.VideoCapture(0)
-    rv, image = camera_capture.read()
-    print(f"Image Dimensions: {image.shape}")
-    camera_capture.release()
-def main():
-    try:
-        # Play default voice
-        default_voice = os.path.join(os.getcwd(), "default.wav")
-        logging.info(f"Playing default voice: {default_voice}")
-        os.system(f"ffplay -nodisp -autoexit -loglevel quiet {default_voice}")
-
-        # Record audio
-        cmd = f'arecord -vv --format=cd --device={os.environ["AUDIO_INPUT_DEVICE"]} -r 48000 --duration=10 -c 1 {WAVE_OUTPUT_FILENAME}'
-        logging.info(f"Recording audio with command: {cmd}")
-        os.system(cmd)
-
-        # Transcribe the recorded audio
-        try:
-            user_input = speech_to_text_manager.speechtotext_from_file(WAVE_OUTPUT_FILENAME, LANG_CODE)
-            logging.info(f"Transcribed user input: {user_input}")
-        except Exception as e:
-            logging.error(f"Error in speech-to-text conversion: {str(e)}")
-            raise
-
-        # Process input (math chain)
-        try:
-            output_text = math_chain.invoke({
-                "question": question,
-                "answer_exp": answer_exp,
-                "student_input": user_input
-            })
-        except Exception as e:
-            logging.error(f"Error in math processing: {str(e)}")
-            raise
-
-        # Text-to-speech using Azure
-        endpoint_url = f'https://{region}.tts.speech.microsoft.com/cognitiveservices/v1'
-        headers = {
-            'Ocp-Apim-Subscription-Key': subscription_key,
-            'Content-Type': 'application/ssml+xml',
-            'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3'
-        }
-
-        ssml = f"""
-        <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>
-            <voice name='en-US-AnaNeural'>
-                {output_text}
-            </voice>
-        </speak>
-        """
-
-        try:
-            response = requests.post(endpoint_url, headers=headers, data=ssml)
-            response.raise_for_status()  # Raises an HTTPError for bad responses
-            
-            tts_filename = "abcd.mp3"
-            with open(tts_filename, 'wb') as f:
-                f.write(response.content)
-            logging.info(f"TTS audio saved to {tts_filename}")
-            
-            os.system(f"ffplay -nodisp -autoexit -loglevel quiet {tts_filename}")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error in TTS API call: {str(e)}")
-            raise
-
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {str(e)}")
-    # response = stream_and_synthesize_response(user_input)
-
-    # Use wrapper in context manager to lease control
-    with SpotController(username=SPOT_USERNAME, password=SPOT_PASSWORD, robot_ip=ROBOT_IP) as spot:
-        time.sleep(2)
-        capture_image()
-        
-        # Move head to specified positions
-        spot.move_head_in_points(yaws=[0.2, 0],
-                               pitches=[0.3, 0],
-                               rolls=[0.4, 0],
-                               sleep_after_point_reached=1)
-        capture_image()
-        time.sleep(3)
-
-        # Move Spot forward
-        spot.move_to_goal(goal_x=0.5, goal_y=0)
-        time.sleep(3)
-        capture_image()
-
-        # Control Spot by velocity
-        spot.move_by_velocity_control(v_x=-0.3, v_y=0, v_rot=0, cmd_duration=2)
-        capture_image()
-        time.sleep(3)
-
-if __name__ == '__main__':
-    main()
-    
-'''
-def stream_and_synthesize_response(user_input):
-    def stream_output():
-        buffer = ""
-        for chunk in math_chain.stream({
-            "question": question,
-            "answer_exp": answer_exp,
-            "student_input": user_input
-        }):
-            buffer += chunk
-            if len(buffer) >= 50 or '.' in buffer or '?' in buffer:
-                yield buffer
-                buffer = ""
-        if buffer:
-            yield buffer
-
-    # Create a temporary file for the audio stream
-    with tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as temp_audio_file:
-        temp_filename = temp_audio_file.name
-        
-        # Start ffplay process for streaming
-        ffplay_process = subprocess.Popen(
-            ['ffplay', 
-             '-f', 's16le',  # Format: 16-bit little-endian
-             '-ar', '16000',  # Sample rate: 16kHz
-             '-ac', '1',      # Mono audio
-             '-i', 'pipe:0',  # Read from stdin
-             '-nodisp',       # No video display
-             '-autoexit'      # Exit when done
-            ],
-            stdin=subprocess.PIPE,
-            bufsize=0  # Unbuffered
-        )
-
-        full_response = ""
-        for text_chunk in stream_output():
-            full_response += text_chunk
-            
-            # Generate speech from the text chunk
-            result = speech_synthesizer.speak_text_async(text_chunk).get()
-            
-            if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                # Write audio data directly to ffplay's stdin
-                try:
-                    ffplay_process.stdin.write(result.audio_data)
-                    ffplay_process.stdin.flush()
-                except BrokenPipeError:
-                    print("Audio stream was closed")
-                    break
-            else:
-                print(f"Speech synthesis failed: {result.reason}")
-
-        # Close the stdin pipe and wait for ffplay to finish
-        try:
-            ffplay_process.stdin.close()
-        except:
-            pass
-        ffplay_process.wait()
-
-    return full_response
-
-
-import os
-import time
+import numpy as np
+from collections import deque
+from dataclasses import dataclass
 from spot_controller import SpotController
-import cv2
+from typing import List, Tuple
+from bosdyn.client import create_standard_sdk
+from bosdyn.client.robot import Robot
+from bosdyn.client.image import ImageClient
+from bosdyn.api import image_pb2
+import time
+import os
+import math
+from deepgram import Deepgram
+from langchain_groq import ChatGroq
+from langchain.schema.runnable import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
-ROBOT_IP = "192.168.80.3"#os.environ['ROBOT_IP']
-SPOT_USERNAME = "admin"#os.environ['SPOT_USERNAME']
-SPOT_PASSWORD = "2zqa8dgw7lor"#os.environ['SPOT_PASSWORD']
 
+@dataclass
+class LED:
+    position: Tuple[int, int]
+    radius: int
+    last_seen: int
 
-def capture_image():
-    camera_capture = cv2.VideoCapture(0)
-    rv, image = camera_capture.read()
-    print(f"Image Dimensions: {image.shape}")
-    camera_capture.release()
-
-
-def main():
-    #endpoint_url = f'https://{region}.tts.speech.microsoft.com/cognitiveservices/v1' # Headers for the request headers = { 'Ocp-Apim-Subscription-Key': subscription_key, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3' # Output audio format } 
-
-    #example of using micro and speakers
-    print("Start recording audio")
-    sample_name = "aaaa.wav"
-    cmd = f'arecord -vv --format=cd --device={os.environ["AUDIO_INPUT_DEVICE"]} -r 48000 --duration=10 -c 1 {sample_name}'
-    print(cmd)
-    os.system(cmd)
-    print("Audio Captured")
-	user_input = speech_to_text_manager.speechtotext_from_file(WAVE_OUTPUT_FILENAME, LANG_CODE)
+class SpotThreatDetector:
+    def __init__(self, spot_controller):
+        self.spot_controller = spot_controller
+        self.image_client = self.spot_controller.robot.ensure_client(ImageClient.default_service_name)
+        
+        # Initialize threat detection parameters
+        self.led_history = deque(maxlen=10)
+        self.frame_count = 0
+        self.led_tracker = []
+        
+        # Available camera sources
+        self.camera_sources = [
+            "frontleft_fisheye_image",
+            "frontright_fisheye_image",
+            "left_fisheye_image",
+            "right_fisheye_image",
+            "back_fisheye_image"
+        ]
+        self.current_camera = self.camera_sources[0]
     
-   endpoint_url = f'https://{region}.tts.speech.microsoft.com/cognitiveservices/v1'
-        headers = {
-            'Ocp-Apim-Subscription-Key': subscription_key,
-            'Content-Type': 'application/ssml+xml',
-            'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3'
-        }
-
-        ssml = f"""
-        <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>
-            <voice name='en-US-AnaNeural'>
-                {user_input}
-            </voice>
-        </speak>
-        """
-        response = requests.post(endpoint_url, headers=headers, data=ssml)
-
-        if response.status_code == 200:
-            # Generate a unique filename for the Azure TTS output
-            tts_filename = f"abcd.mp3"
+    def capture_frame(self):
+        """Captures a frame from Spot's current camera"""
+        try:
+            image_responses = self.image_client.get_image_from_sources([self.current_camera])
+            if not image_responses:
+                raise Exception("No image responses received")
             
-            # Save the audio file
-            with open(tts_filename, 'wb') as f:
-                f.write(response.content)
+            image_response = image_responses[0]
+            image_data = image_response.shot.image.data
+            
+            # Convert to OpenCV format
+            numpy_array = np.frombuffer(image_data, dtype=np.uint8)
+            frame = cv2.imdecode(numpy_array, cv2.IMREAD_COLOR)
+            
+            if frame is None:
+                raise Exception("Failed to decode image data")
                 
-    os.system(f"ffplay -nodisp -autoexit -loglevel quiet {“abcd.mp3}")
-        # # Capture image
+            return frame
+            
+        except Exception as e:
+            print(f"Error capturing frame: {str(e)}")
+            return None
+    
+    def process_frame(self, frame):
+        """Process frame for threat detection"""
+        if frame is None:
+            return None, False
+            
+        # Convert to HSV for better red detection
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Define range for red color
+        lower_red1 = np.array([0, 100, 100])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([160, 100, 100])
+        upper_red2 = np.array([180, 255, 255])
+        
+        # Create masks for red detection
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        mask = cv2.bitwise_or(mask1, mask2)
+        
+        # Apply noise reduction
+        mask = cv2.erode(mask, None, iterations=2)
+        mask = cv2.dilate(mask, None, iterations=2)
+        
+        # Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        current_leds = []
+        for contour in contours:
+            if cv2.contourArea(contour) > 50:
+                ((x, y), radius) = cv2.minEnclosingCircle(contour)
+                if radius > 5:
+                    current_leds.append(LED((int(x), int(y)), int(radius), self.frame_count))
+        
+        self.led_history.append(current_leds)
+        return self.detect_threat(frame)
+    
+    def detect_threat(self, frame):
+        """Detect potential threats in the frame"""
+        if len(self.led_history) < 5:
+            return frame, False
+            
+        led_groups = []
+        for leds in self.led_history:
+            if len(leds) >= 3:
+                positions = [(led.position[0], led.position[1]) for led in leds]
+                led_groups.append(positions)
+        
+        if len(led_groups) < 5:
+            return frame, False
+            
+        threat_detected = False
+        threat_box = None
+        
+        for i in range(len(led_groups[-1])):
+            nearby_leds = []
+            center = led_groups[-1][i]
+            
+            for j in range(len(led_groups[-1])):
+                if i != j:
+                    dx = center[0] - led_groups[-1][j][0]
+                    dy = center[1] - led_groups[-1][j][1]
+                    distance = np.sqrt(dx*dx + dy*dy)
+                    if distance < 100:
+                        nearby_leds.append(led_groups[-1][j])
+            
+            if len(nearby_leds) >= 2:
+                threat_detected = True
+                all_points = [center] + nearby_leds
+                min_x = min(p[0] for p in all_points)
+                min_y = min(p[1] for p in all_points)
+                max_x = max(p[0] for p in all_points)
+                max_y = max(p[1] for p in all_points)
+                
+                padding = 20
+                threat_box = (
+                    max(0, min_x - padding),
+                    max(0, min_y - padding),
+                    min(frame.shape[1], max_x + padding),
+                    min(frame.shape[0], max_y + padding)
+                )
+                break
+        
+        if threat_detected and threat_box:
+            cv2.rectangle(frame, 
+                        (int(threat_box[0]), int(threat_box[1])),
+                        (int(threat_box[2]), int(threat_box[3])),
+                        (0, 0, 255), 2)
+            cv2.putText(frame, "THREAT DETECTED", 
+                       (int(threat_box[0]), int(threat_box[1] - 10)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            
+            # Save frame when threat is detected
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            cv2.imwrite(f"threat_detected_{timestamp}.jpg", frame)
+        
+        return frame, threat_detected
+    
+    def create_thermal_vision(self, frame):
+        """Create thermal vision effect from regular frame"""
+        if frame is None:
+            return None
+            
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (9, 9), 0)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(blurred)
+        thermal = cv2.applyColorMap(enhanced, cv2.COLORMAP_JET)
+        thermal = cv2.addWeighted(thermal, 1.2, thermal, 0, 0)
+        return thermal
+    
+    def switch_camera(self):
+        """Switch to next available camera"""
+        current_index = self.camera_sources.index(self.current_camera)
+        next_index = (current_index + 1) % len(self.camera_sources)
+        self.current_camera = self.camera_sources[next_index]
+        print(f"Switched to camera: {self.current_camera}")
+    
+    def capture_head_movement_frames(self, start_pitch, end_pitch, num_frames):
+        """Capture frames as the robot moves its head down"""
+        frames_dir = 'head_movement_frames'
+        os.makedirs(frames_dir, exist_ok=True)
 
-    # Use wrapper in context manager to lease control, turn on E-Stop, power on the robot and stand up at start
-    # and to return lease + sit down at the end
-    with SpotController(username=SPOT_USERNAME, password=SPOT_PASSWORD, robot_ip=ROBOT_IP) as spot:
+        pitch_step = (end_pitch - start_pitch) / (num_frames - 1)
+        pitches = [start_pitch + i * pitch_step for i in range(num_frames)]
 
+        for _ in self.spot_controller.move_head_in_points(yaws=[0]*num_frames, pitches=pitches, rolls=[0]*num_frames, sleep_after_point_reached=0.1):
+            # Capture frame
+            frame = self.capture_frame()
+            if frame is not None:
+                # Process frame
+                processed_frame, threat_detected = self.process_frame(frame.copy())
+                thermal_frame = self.create_thermal_vision(frame)
+                
+                # Save frames
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                frame_number = f"{self.frame_count:04d}"
+                
+                cv2.imwrite(os.path.join(frames_dir, f'original_{timestamp}_{frame_number}.jpg'), frame)
+                if processed_frame is not None:
+                    cv2.imwrite(os.path.join(frames_dir, f'threat_detection_{timestamp}_{frame_number}.jpg'), processed_frame)
+                if thermal_frame is not None:
+                    cv2.imwrite(os.path.join(frames_dir, f'thermal_vision_{timestamp}_{frame_number}.jpg'), thermal_frame)
+                
+                self.frame_count += 1
+
+        print(f"Captured {self.frame_count} frames during head movement. Saved in '{frames_dir}' directory.")
+
+    def run_head_movement_capture(self):
+        """Run the head movement capture sequence"""
+        # Move head down and capture frames
+        self.capture_head_movement_frames(start_pitch=0, end_pitch=0.5, num_frames=20)
+        
+        # Move head back to normal position
+        self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+
+    def execute_smooth_u_turn(self, forward_distance=1.0, turn_radius=0.5):
+        """
+        Performs a smooth U-turn movement with the Spot robot:
+        """
+        # Move forward
+        self.spot_controller.move_to_goal(goal_x=forward_distance, goal_y=0)
+        time.sleep(1)
+        
+        # Execute smooth U-turn using velocity controls
+        # We'll break the 180-degree turn into smaller segments
+        # Angular velocity (rad/s) - slower rotation for smoothness
+        v_rot = 0.5
+        # Linear velocity (m/s) - move in an arc
+        v_x = 0.3
+        
+        # Add 20% extra time to ensure completion
+        turn_time = (math.pi / v_rot) * 1.2
+        
+        # Number of segments for the turn
+        num_segments = 10
+        segment_time = turn_time / num_segments
+        
+        # Execute the turn in segments
+        for i in range(num_segments):
+            # Gradually reduce forward velocity and increase side velocity through the turn
+            progress = i / num_segments
+            current_v_x = v_x * (1 - progress)
+            current_v_y = v_x * math.sin(progress * math.pi)
+            
+            self.spot_controller.move_by_velocity_control(
+                v_x=current_v_x,
+                v_y=current_v_y,
+                v_rot=v_rot,
+                cmd_duration=segment_time
+            )
+            time.sleep(segment_time)
+        
+        # Brief pause to stabilize
+        time.sleep(1)
+        
+        # Move back to starting position
+        self.spot_controller.move_to_goal(goal_x=forward_distance, goal_y=0)
+        time.sleep(1)
+        
+        # Final adjustment to ensure we're facing the original direction
+        self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0])
+
+    def transcribe_audio(self, audio_file_path):
+        """Transcribe audio file using Deepgram API"""
+        DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
+        
+        if not DEEPGRAM_API_KEY:
+            print("Error: DEEPGRAM_API_KEY not found in environment variables.")
+            return None
+
+        dg_client = Deepgram(DEEPGRAM_API_KEY)
+
+        with open(audio_file_path, 'rb') as audio:
+            source = {'buffer': audio, 'mimetype': 'audio/wav'}
+            options = {"punctuate": True, "model": "general", "language": "en-US"}
+
+            try:
+                response = dg_client.transcription.sync_prerecorded(source, options)
+                transcript = response["results"]["channels"][0]["alternatives"][0]["transcript"]
+                return transcript
+            except Exception as e:
+                print(f"Error during transcription: {str(e)}")
+                return None
+
+    def run_complete_sequence(self):
+        audio_file_path = "initial_recording.wav"
+        groq_api_key = os.environ.get('GROQ_API_KEY')
+        
+        transcript = self.transcribe_audio(audio_file_path)
+        cmd = f'arecord -vv --format=cd --device={os.environ["AUDIO_INPUT_DEVICE"]} -r 48000 --duration=10 -c 1 {audio_file_path}'
+        print(cmd)
+        os.system(cmd)
+        if transcript:
+            print("Audio Transcript:")
+            print(transcript)
+        else:
+            print("Failed to transcribe audio.")
+        
+        groq_chat_model = ChatGroq(
+            api_key=groq_api_key, 
+            model_name='llama3-groq-8b-8192-tool-use-preview',
+            temperature = 0
+        )
+        response = groq_chat_model.invoke({"question": transcript})
+        print(response)
+
+        self.spot_controller.move_to_goal(goal_x=2.5, goal_y=0) 
         time.sleep(2)
-        capture_image()
-        # Move head to specified positions with intermediate time.sleep
-        spot.move_head_in_points(yaws=[0.2, 0],
-                                 pitches=[0.3, 0],
-                                 rolls=[0.4, 0],
-                                 sleep_after_point_reached=1)
-        capture_image()
-        time.sleep(3)
+        self.spot_controller.move_head_in_points(yaws=[0.2], pitches=[0], rolls=[0], sleep_after_point_reached=1)
 
-        # Make Spot to move by goal_x meters forward and goal_y meters left
-        spot.move_to_goal(goal_x=0.5, goal_y=0)
-        time.sleep(3)
-        capture_image()
+        self.run_head_movement_capture()
+        self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+        self.spot_controller.move_to_goal(goal_x=1.5, goal_y=0)  
+        time.sleep(2)
+        self.spot_controller.move_head_in_points(yaws=[-0.2], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+        self.run_head_movement_capture()
+        self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+        
+        time.sleep(2)
+        print("Executing smooth U-turn")
+        self.run_head_movement_capture()
+        time.sleep(2)
+        self.execute_smooth_u_turn(forward_distance=2.5, turn_radius=0.5)
+        time.sleep(5)
+        
+def main():
+    # Replace these with your Spot robot's credentials
+    ROBOT_IP = "192.168.80.3"
+    SPOT_USERNAME = "admin"
+    SPOT_PASSWORD = "2zqa8dgw7lor"
+    
+    # Initialize SpotController
+    with SpotController(username=SPOT_USERNAME, password=SPOT_PASSWORD, robot_ip=ROBOT_IP) as spot:
+        # Initialize SpotThreatDetector with SpotController
+        detector = SpotThreatDetector(spot)
+        
+        # Run the complete sequence
+        detector.run_complete_sequence()
 
-        # Control Spot by velocity in m/s (or in rad/s for rotation)
-        spot.move_by_velocity_control(v_x=-0.3, v_y=0, v_rot=0, cmd_duration=2)
-        capture_image()
-        time.sleep(3)
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-
-
-
-'''
