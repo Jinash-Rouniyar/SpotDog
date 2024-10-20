@@ -12,10 +12,10 @@ import time
 import os
 import math
 from deepgram import Deepgram
-from langchain_groq import ChatGroq
+from groq_bot import groq_chain
 from langchain.schema.runnable import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-
+import keyboard
 
 @dataclass
 class LED:
@@ -221,34 +221,30 @@ class SpotThreatDetector:
         # Move head back to normal position
         self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
 
-    def execute_smooth_u_turn(self, forward_distance=1.0, turn_radius=0.5):
+    def execute_smooth_u_turn(self, turn_radius=0.3):
         """
-        Performs a smooth U-turn movement with the Spot robot:
+        Performs a faster, tighter smooth 360-degree turn with the Spot robot
         """
-        # Move forward
-        self.spot_controller.move_to_goal(goal_x=forward_distance, goal_y=0)
-        time.sleep(1)
-        
-        # Execute smooth U-turn using velocity controls
-        # We'll break the 180-degree turn into smaller segments
-        # Angular velocity (rad/s) - slower rotation for smoothness
-        v_rot = 0.5
-        # Linear velocity (m/s) - move in an arc
-        v_x = 0.3
-        
-        # Add 20% extra time to ensure completion
-        turn_time = (math.pi / v_rot) * 1.2
-        
+        # Angular velocity (rad/s) - faster rotation
+        v_rot = 0.8
+        # Linear velocity (m/s) - move in a smaller circle
+        v_x = turn_radius * v_rot
+
+        # Calculate time for a full 360-degree turn
+        turn_time = (2 * math.pi / v_rot) * 1.1
+
         # Number of segments for the turn
-        num_segments = 10
+        num_segments = 20
         segment_time = turn_time / num_segments
-        
+
         # Execute the turn in segments
         for i in range(num_segments):
-            # Gradually reduce forward velocity and increase side velocity through the turn
-            progress = i / num_segments
-            current_v_x = v_x * (1 - progress)
-            current_v_y = v_x * math.sin(progress * math.pi)
+            # Calculate current angle in the turn
+            angle = (i / num_segments) * 2 * math.pi
+            
+            # Calculate velocities for circular motion
+            current_v_x = v_x * math.cos(angle)
+            current_v_y = v_x * math.sin(angle)
             
             self.spot_controller.move_by_velocity_control(
                 v_x=current_v_x,
@@ -257,16 +253,9 @@ class SpotThreatDetector:
                 cmd_duration=segment_time
             )
             time.sleep(segment_time)
-        
+
         # Brief pause to stabilize
-        time.sleep(1)
-        
-        # Move back to starting position
-        self.spot_controller.move_to_goal(goal_x=forward_distance, goal_y=0)
-        time.sleep(1)
-        
-        # Final adjustment to ensure we're facing the original direction
-        self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0])
+        time.sleep(0.5)
 
     def transcribe_audio(self, audio_file_path):
         """Transcribe audio file using Deepgram API"""
@@ -289,10 +278,44 @@ class SpotThreatDetector:
             except Exception as e:
                 print(f"Error during transcription: {str(e)}")
                 return None
+    def execute_direction(self,instruction):
+        if instruction == "quit":
+            print("Quitting continuous control mode.")
 
+        elif instruction == "up":
+            self.spot_controller.move_to_goal(goal_x=1.0, goal_y=0)
+            print("Moving forward 1 meter")
+
+        elif instruction == "down":
+            self.spot_controller.move_to_goal(goal_x=-1.0, goal_y=0)
+            print("Moving backward 1 meter")
+
+        elif instruction == "left":
+            print("Turning left and moving forward")
+            self.spot_controller.move_head_in_points(yaws=[0.5], pitches=[0], rolls=[0])
+            time.sleep(0.5)  # Wait for head movement to complete
+            self.spot_controller.move_to_goal(goal_x=1.0, goal_y=0)
+            self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0])  # Reset head position
+
+        elif instruction == "right":
+            print("Turning right and moving forward")
+            self.spot_controller.move_head_in_points(yaws=[-0.5], pitches=[0], rolls=[0])
+            time.sleep(0.5)  # Wait for head movement to complete
+            self.spot_controller.move_to_goal(goal_x=1.0, goal_y=0)
+            self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0])  # Reset head position
+
+        elif instruction == "turn":
+            print("Executing smooth 360-degree turn")
+            self.execute_smooth_u_turn()
+
+        elif instruction == "scan":
+            print("Moving head down and capturing frames")
+            self.run_head_movement_capture()
+
+        # Add a small delay to prevent excessive CPU usage
+        time.sleep(0.1)
     def run_complete_sequence(self):
         audio_file_path = "initial_recording.wav"
-        groq_api_key = os.environ.get('GROQ_API_KEY')
         
         transcript = self.transcribe_audio(audio_file_path)
         cmd = f'arecord -vv --format=cd --device={os.environ["AUDIO_INPUT_DEVICE"]} -r 48000 --duration=10 -c 1 {audio_file_path}'
@@ -304,32 +327,30 @@ class SpotThreatDetector:
         else:
             print("Failed to transcribe audio.")
         
-        groq_chat_model = ChatGroq(
-            api_key=groq_api_key, 
-            model_name='llama3-groq-8b-8192-tool-use-preview',
-            temperature = 0
-        )
-        response = groq_chat_model.invoke({"question": transcript})
+        response = groq_chain.invoke({"question": transcript})
         print(response)
 
-        self.spot_controller.move_to_goal(goal_x=2.5, goal_y=0) 
-        time.sleep(2)
-        self.spot_controller.move_head_in_points(yaws=[0.2], pitches=[0], rolls=[0], sleep_after_point_reached=1)
-
-        self.run_head_movement_capture()
-        self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
-        self.spot_controller.move_to_goal(goal_x=1.5, goal_y=0)  
-        time.sleep(2)
-        self.spot_controller.move_head_in_points(yaws=[-0.2], pitches=[0], rolls=[0], sleep_after_point_reached=1)
-        self.run_head_movement_capture()
-        self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+        for instruction in response:
+            self.execute_direction(instruction)
         
-        time.sleep(2)
-        print("Executing smooth U-turn")
-        self.run_head_movement_capture()
-        time.sleep(2)
-        self.execute_smooth_u_turn(forward_distance=2.5, turn_radius=0.5)
-        time.sleep(5)
+        # self.spot_controller.move_to_goal(goal_x=2.5, goal_y=0) 
+        # time.sleep(2)
+        # self.spot_controller.move_head_in_points(yaws=[0.2], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+
+        # self.run_head_movement_capture()
+        # self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+        # self.spot_controller.move_to_goal(goal_x=1.5, goal_y=0)  
+        # time.sleep(2)
+        # self.spot_controller.move_head_in_points(yaws=[-0.2], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+        # self.run_head_movement_capture()
+        # self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
+        
+        # time.sleep(2)
+        # print("Executing smooth U-turn")
+        # self.run_head_movement_capture()
+        # time.sleep(2)
+        # self.execute_smooth_u_turn(forward_distance=2.5, turn_radius=0.5)
+        # time.sleep(5)
         
 def main():
     # Replace these with your Spot robot's credentials
