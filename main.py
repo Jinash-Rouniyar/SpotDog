@@ -7,7 +7,6 @@ from typing import List, Tuple
 from bosdyn.client import create_standard_sdk
 from bosdyn.client.robot import Robot
 from bosdyn.client.image import ImageClient
-from bosdyn.api import image_pb2
 import time
 import os
 import math
@@ -15,7 +14,7 @@ from deepgram import Deepgram
 from groq_bot import groq_chain
 from langchain.schema.runnable import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-import keyboard
+import numpy as np
 
 @dataclass
 class LED:
@@ -332,25 +331,6 @@ class SpotThreatDetector:
 
         for instruction in response:
             self.execute_direction(instruction)
-        
-        # self.spot_controller.move_to_goal(goal_x=2.5, goal_y=0) 
-        # time.sleep(2)
-        # self.spot_controller.move_head_in_points(yaws=[0.2], pitches=[0], rolls=[0], sleep_after_point_reached=1)
-
-        # self.run_head_movement_capture()
-        # self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
-        # self.spot_controller.move_to_goal(goal_x=1.5, goal_y=0)  
-        # time.sleep(2)
-        # self.spot_controller.move_head_in_points(yaws=[-0.2], pitches=[0], rolls=[0], sleep_after_point_reached=1)
-        # self.run_head_movement_capture()
-        # self.spot_controller.move_head_in_points(yaws=[0], pitches=[0], rolls=[0], sleep_after_point_reached=1)
-        
-        # time.sleep(2)
-        # print("Executing smooth U-turn")
-        # self.run_head_movement_capture()
-        # time.sleep(2)
-        # self.execute_smooth_u_turn(forward_distance=2.5, turn_radius=0.5)
-        # time.sleep(5)
         
 def main():
     # Replace these with your Spot robot's credentials
